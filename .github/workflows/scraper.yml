@@ -2,9 +2,9 @@ name: FIFA WC 2026 Scraper
 
 on:
   schedule:
-    - cron: '30 3 * * *'   # 9:00 AM IST (UTC+5:30)
-    - cron: '30 12 * * *'  # 6:00 PM IST (UTC+5:30)
-  workflow_dispatch:        # allows manual trigger from GitHub UI
+    - cron: '30 3 * * *'    # 9:00 AM IST (UTC+5:30)
+    - cron: '30 12 * * *'   # 6:00 PM IST (UTC+5:30)
+  workflow_dispatch:
 
 jobs:
   scrape:
@@ -21,7 +21,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install playwright supabase python-dotenv
+          pip install -r requirements.txt
           playwright install chromium
           playwright install-deps chromium
 
