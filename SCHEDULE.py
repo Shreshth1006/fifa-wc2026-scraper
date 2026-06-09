@@ -34,6 +34,7 @@ load_dotenv()
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+TABLE_NAME    = "FIFA World Cup Schedule - Live"
 SCROLL_PAUSE  = 2.5
 MAX_SCROLLS   = 80
 # ─────────────────────────────────────────────────────────────────────────────
