@@ -1,0 +1,38 @@
+name: FIFA WC 2026 Scraper
+
+on:
+  schedule:
+    - cron: '30 3 * * *'   # 9:00 AM IST (UTC+5:30)
+    - cron: '30 12 * * *'  # 6:00 PM IST (UTC+5:30)
+  workflow_dispatch:        # allows manual trigger from GitHub UI
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install playwright supabase python-dotenv
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run Schedule Scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python SCHEDULE.py
+
+      - name: Run Standings Scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python POINTS.py

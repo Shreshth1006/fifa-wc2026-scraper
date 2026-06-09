@@ -24,8 +24,13 @@ from supabase import create_client, Client
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 URL          = "https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/standings"
-SUPABASE_URL = "https://iysiejpiupmcxynhxsyj.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml5c2llanBpdXBtY3h5bmh4c3lqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4Njk4NTQsImV4cCI6MjA5NTQ0NTg1NH0.s9_4IhS2HGq_4PyJqFJWcIGYxaahn9mkWIk1CguFmNE"
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 TABLE_NAME   = "FIFA World Cup Points Table - Live"
 # ─────────────────────────────────────────────────────────────────────────────
 
