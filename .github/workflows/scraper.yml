@@ -2,8 +2,8 @@ name: FIFA WC 2026 Scraper
 
 on:
   schedule:
-    - cron: '30 3 * * *'    # 9:00 AM IST (UTC+5:30)
-    - cron: '30 12 * * *'   # 6:00 PM IST (UTC+5:30)
+    - cron: '0 19 * * *'    # 12:30 AM IST (UTC+5:30)
+    - cron: '30 1 * * *'    # 7:00 AM IST (UTC+5:30)
   workflow_dispatch:
 
 jobs:
