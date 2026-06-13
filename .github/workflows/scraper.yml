@@ -2,14 +2,15 @@ name: FIFA WC 2026 Scraper
 
 on:
   schedule:
-    - cron: '0 19 * * *'    # 12:30 AM IST (UTC+5:30)
-    - cron: '30 1 * * *'    # 7:00 AM IST (UTC+5:30)
+    - cron: '30 19 * * *'   # 1:00 AM IST
+    - cron: '30 23 * * *'   # 5:00 AM IST
+    - cron: '30 2 * * *'    # 8:00 AM IST
+    - cron: '30 4 * * *'    # 10:00 AM IST
   workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -36,3 +37,9 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python POINTS.py
+
+      - name: Run Results Updater
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python fifa_wc2026_results_updater.py
