@@ -1,118 +1,57 @@
 """
-FIFA World Cup 2026 – Schedule Scraper → Supabase
-==================================================
+FIFA World Cup 2026 – Results-Only Updater → Supabase
+=====================================================
+This script ONLY updates the 'Results' column for completed matches.
+It NEVER touches Date, Group, Fixture, Short Name, or Kick-off Time.
+
+Match identity: matched by 'Fixture' column (e.g. "Mexico vs South Africa")
+
 Source  : https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/scores-fixtures
-Output  : Supabase table → FIFA World Cup Schedule - Live
-
-Columns : Date | Group | Fixture | Short Name | Kick-off Time (IST) | Results
-
-Requirements
-------------
-    pip install playwright supabase
-    playwright install chromium
+Output  : Supabase table → FIFA World Cup Schedule - Live (Results column only)
 
 Run
 ---
-    python fifa_wc2026_schedule_supabase.py
+    python fifa_wc2026_results_updater.py
 """
 
 import time
 import re
-from datetime import datetime
+import os
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 from supabase import create_client, Client
+from dotenv import load_dotenv
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-URL          = (
+load_dotenv()
+
+URL = (
     "https://www.fifa.com/en/tournaments/mens/worldcup/"
     "canadamexicousa2026/scores-fixtures?country=&wtw-filter=ALL"
 )
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-TABLE_NAME    = "FIFA World Cup Schedule - Live"
-SCROLL_PAUSE  = 2.5
-MAX_SCROLLS   = 80
+TABLE_NAME   = "FIFA World Cup Schedule - Live"
+
+SCROLL_PAUSE = 2.5
+MAX_SCROLLS  = 80
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-# ── HELPERS ──────────────────────────────────────────────────────────────────
 def clean(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
-def parse_date(raw: str) -> str:
-    """'Friday 12 June 2026' → 'Jun 12'"""
-    for fmt in ("%A %d %B %Y", "%A, %d %B %Y", "%d %B %Y"):
-        try:
-            return datetime.strptime(raw.strip(), fmt).strftime("%b %d")
-        except ValueError:
-            continue
-    return raw.strip()
+def scrape_results_only() -> list[dict]:
+    """
+    Returns a list of dicts for COMPLETED matches only:
+        { "Fixture": "Mexico vs South Africa", "Results": "2 - 0" }
 
-
-def extract_group(label_text: str) -> str:
-    parts = [p.strip() for p in label_text.split("·")]
-    for part in parts:
-        m = re.search(r"Group\s+([A-Z])", part)
-        if m:
-            return f"Group {m.group(1)}"
-    return parts[0] if parts else ""
-
-
-def extract_venue(label_text: str) -> str:
-    parts = [p.strip() for p in label_text.split("·")]
-    return parts[-1] if parts else ""
-
-
-def make_short_name(team1: str, team2: str) -> str:
-    """Generate short name like 'MEX VS RSA' from full team names."""
-    abbr = {
-        "Mexico": "MEX", "South Africa": "RSA", "Korea Republic": "KOR",
-        "Czechia": "CZE", "Canada": "CAN", "Bosnia and Herzegovina": "BIH",
-        "Qatar": "QAT", "Switzerland": "SUI", "Brazil": "BRA",
-        "Morocco": "MAR", "Haiti": "HAI", "Scotland": "SCO",
-        "USA": "USA", "Paraguay": "PAR", "Australia": "AUS",
-        "Türkiye": "TUR", "Germany": "GER", "Curaçao": "CUW",
-        "Netherlands": "NED", "Japan": "JPN", "Côte d'Ivoire": "CIV",
-        "Ecuador": "ECU", "Sweden": "SWE", "Tunisia": "TUN",
-        "Spain": "ESP", "Cabo Verde": "CPV", "Belgium": "BEL",
-        "Egypt": "EGY", "Saudi Arabia": "KSA", "Uruguay": "URU",
-        "IR Iran": "IRN", "New Zealand": "NZL", "France": "FRA",
-        "Senegal": "SEN", "Iraq": "IRQ", "Norway": "NOR",
-        "Argentina": "ARG", "Algeria": "ALG", "Austria": "AUT",
-        "Jordan": "JOR", "Portugal": "POR", "Congo DR": "COD",
-        "England": "ENG", "Croatia": "CRO", "Ghana": "GHA",
-        "Panama": "PAN", "Uzbekistan": "UZB", "Colombia": "COL",
-        "Serbia": "SRB", "Chile": "CHI", "Denmark": "DEN",
-        "Poland": "POL", "Ukraine": "UKR", "Romania": "ROU",
-        "Nigeria": "NGA", "Cameroon": "CMR", "Mali": "MLI",
-        "Venezuela": "VEN", "Peru": "PER", "Honduras": "HON",
-        "Costa Rica": "CRC", "Jamaica": "JAM",
-    }
-    a1 = abbr.get(team1, team1[:3].upper())
-    a2 = abbr.get(team2, team2[:3].upper())
-    return f"{a1} VS {a2}"
-
-
-def utc_to_ist(time_str: str) -> str:
-    try:
-        h, m = map(int, time_str.strip().split(":"))
-        ampm = "AM" if h < 12 else "PM"
-        h12  = h % 12 or 12
-        return f"{h12}:{m:02d} {ampm}"
-    except Exception:
-        return time_str
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-# ── SCRAPER ──────────────────────────────────────────────────────────────────
-def scrape() -> list[dict]:
-    matches = []
+    Logic per match row:
+    - If match-row_matchRowStatus exists  → match played → extract scores
+    - If match-row_matchTime exists       → upcoming     → SKIP entirely
+    """
+    results = []
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
@@ -130,7 +69,7 @@ def scrape() -> list[dict]:
         )
         page = ctx.new_page()
 
-        print("[*] Loading page …")
+        print("[*] Loading FIFA fixtures page …")
         page.goto(URL, wait_until="domcontentloaded", timeout=60_000)
 
         print("[*] Waiting for match rows …")
@@ -151,38 +90,44 @@ def scrape() -> list[dict]:
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             time.sleep(SCROLL_PAUSE)
             new_height = page.evaluate("document.body.scrollHeight")
-            rows_so_far = len(page.query_selector_all("[class*='match-row_matchRowContainer']"))
+            rows_so_far = len(
+                page.query_selector_all("[class*='match-row_matchRowContainer']")
+            )
             print(f"    scroll {i+1:02d} | height {new_height:,} | rows: {rows_so_far}")
             if new_height == prev_height:
                 print("    → no more content")
                 break
             prev_height = new_height
 
-        print("[*] Parsing match data …")
-        current_date = ""
+        print("[*] Parsing match rows for results …")
 
-        elements = page.query_selector_all(
-            "[class*='matches-container_header'], "
-            "[class*='match-row_matchRowContainer']"
-        )
-        print(f"[*] Total elements found: {len(elements)}")
+        rows = page.query_selector_all("[class*='match-row_matchRowContainer']")
+        print(f"[*] Total match rows found: {len(rows)}")
 
-        for el in elements:
-            cls = el.get_attribute("class") or ""
+        completed = 0
+        skipped   = 0
 
-            # Date header
-            if "matches-container_header" in cls:
-                title_el = el.query_selector("[class*='matches-container_title']")
-                if title_el:
-                    current_date = parse_date(clean(title_el.inner_text()))
+        for row in rows:
+            # ── Check if match is played (status div exists) ──────────────
+            status_div = row.query_selector("[class*='match-row_matchRowStatus']")
+            time_span  = row.query_selector("[class*='match-row_matchTime']")
+
+            if time_span and not status_div:
+                # Upcoming match — time is shown, no score yet → SKIP
+                skipped += 1
                 continue
 
-            # Match row
-            teams = el.query_selector_all("span.d-none.d-md-block")
+            if not status_div:
+                # Neither status nor time — unusual, skip
+                skipped += 1
+                continue
+
+            # ── Extract team names (same logic as original scraper) ───────
+            teams = row.query_selector_all("span.d-none.d-md-block")
             team_names = [clean(t.inner_text()) for t in teams if clean(t.inner_text())]
 
             if len(team_names) < 2:
-                team_divs = el.query_selector_all("[class*='match-row_team']")
+                team_divs = row.query_selector_all("[class*='match-row_team']")
                 for div in team_divs:
                     spans = div.query_selector_all("span")
                     for s in spans:
@@ -192,69 +137,93 @@ def scrape() -> list[dict]:
                             break
 
             if len(team_names) < 2:
+                print(f"    [!] Could not extract team names for a row — skipping")
+                skipped += 1
                 continue
 
             team1, team2 = team_names[0], team_names[1]
+            fixture = f"{team1} vs {team2}"
 
-            time_el     = el.query_selector("[class*='match-row_matchTime']")
-            kickoff_raw = clean(time_el.inner_text()) if time_el else ""
-            kickoff     = utc_to_ist(kickoff_raw)
+            # ── Extract scores from the two score spans ───────────────────
+            # HTML structure inside match-row_matchRowStatus:
+            #   <span class="match-row_score__wfcQP match-row_scoreWinner__KB4p-">2</span>
+            #   <div class="match-row_status__kFtCL">
+            #       <span class="match-row_statusLabel__AiSA3 match-row_fullTime__muXhs">FT</span>
+            #   </div>
+            #   <span class="match-row_score__wfcQP match-row_scoreLoser__wNbgU">0</span>
 
-            label_el  = el.query_selector("[class*='match-row_bottomLabelWrapper']")
-            label_txt = clean(label_el.inner_text()) if label_el else ""
+            score_spans = status_div.query_selector_all("[class*='match-row_score']")
+            score_values = [clean(s.inner_text()) for s in score_spans if clean(s.inner_text()).isdigit()]
 
-            # Results — score if available, empty if not played yet
-            score_el = el.query_selector("[class*='match-row_score']")
-            results  = clean(score_el.inner_text()) if score_el else ""
+            if len(score_values) < 2:
+                # Score not yet available (e.g. match in progress with no score shown)
+                print(f"    [~] {fixture} — status div found but scores not ready, skipping")
+                skipped += 1
+                continue
 
-            matches.append({
-                "Match Number":        len(matches) + 1,
-                "Date":               current_date,
-                "Group":              extract_group(label_txt),
-                "Fixture":            f"{team1} vs {team2}",
-                "Short Name":         make_short_name(team1, team2),
-                "Kick-off Time (IST)": kickoff,
-                "Results":            results,
+            score1, score2 = score_values[0], score_values[1]
+            result_str = f"{score1} - {score2}"
+
+            results.append({
+                "Fixture": fixture,
+                "Results": result_str,
             })
+            completed += 1
+            print(f"    [✓] {fixture}: {result_str}")
 
         browser.close()
 
-    print(f"[✓] Scraped {len(matches)} matches")
-    return matches
-# ─────────────────────────────────────────────────────────────────────────────
+    print(f"\n[✓] Scraped {completed} completed results | {skipped} upcoming/skipped")
+    return results
 
 
-# ── SUPABASE UPSERT x───────────────────────────────────────────────────────────
-def push_to_supabase(matches: list[dict]) -> None:
-    if not matches:
-        print("[!] No data to push.")
+def push_results_to_supabase(results: list[dict]) -> None:
+    """
+    For each completed match, update ONLY the Results column.
+    Matches by Fixture string. Uses .update() with .eq() — NOT upsert —
+    so no other column is ever touched.
+    """
+    if not results:
+        print("[!] No completed results to push.")
         return
 
     print("[*] Connecting to Supabase …")
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    print(f"[*] Upserting {len(matches)} rows into '{TABLE_NAME}' …")
+    updated = 0
+    failed  = 0
 
-    batch_size = 50
-    total = 0
+    for match in results:
+        fixture = match["Fixture"]
+        result  = match["Results"]
 
-    for i in range(0, len(matches), batch_size):
-        batch = matches[i : i + batch_size]
-        supabase.table(TABLE_NAME).upsert(
-            batch,
-           on_conflict="Match Number"   # unique: same fixture on same date
-        ).execute()
-        total += len(batch)
-        print(f"    → Pushed batch {i // batch_size + 1} ({len(batch)} rows)")
+        try:
+            resp = (
+                supabase
+                .table(TABLE_NAME)
+                .update({"Results": result})          # ONLY Results column
+                .eq("Fixture", fixture)               # match by Fixture string
+                .execute()
+            )
 
-    print(f"[✓] Done! {total} rows upserted to '{TABLE_NAME}'")
-# ─────────────────────────────────────────────────────────────────────────────
+            if resp.data:
+                updated += 1
+                print(f"    [✓] Updated '{fixture}' → {result}")
+            else:
+                # Could mean fixture string doesn't match exactly in DB
+                print(f"    [!] No row found for fixture: '{fixture}' — check spelling")
+                failed += 1
+
+        except Exception as e:
+            print(f"    [✗] Error updating '{fixture}': {e}")
+            failed += 1
+
+    print(f"\n[✓] Done! {updated} updated | {failed} failed")
 
 
 if __name__ == "__main__":
-    data = scrape()
+    data = scrape_results_only()
     if data:
-        push_to_supabase(data)
+        push_results_to_supabase(data)
     else:
-        print("[!] No data scraped.")
-        print("    → Try setting headless=False to debug.")
+        print("[!] No completed matches found.")
