@@ -1,17 +1,34 @@
 """
-FIFA World Cup 2026 – Results-Only Updater → Supabase
-=====================================================
-This script ONLY updates the 'Results' column for completed matches.
-It NEVER touches Date, Group, Fixture, Short Name, or Kick-off Time.
+FIFA World Cup 2026 – Fixture + Short Name + Results Updater → Supabase
+=========================================================================
+Updates ONLY these three columns, matched by 'Match Number':
+    - Fixture     (e.g. "TBD vs TBD" → "Mexico vs Argentina" once decided)
+    - Short Name  (e.g. "1A VS 2B"   → "MEX VS ARG" — must move together
+                   with Fixture, otherwise the two go out of sync and the
+                   web page shows mismatched team names)
+    - Results     (e.g. "" → "2 - 1" once the match is played)
 
-Match identity: matched by 'Fixture' column (e.g. "Mexico vs South Africa")
+NEVER touches: Date, Group, Kick-off Time (IST)
+  → These are set once when the schedule is first known and don't need
+    re-scraping. Re-touching Kick-off Time was the original bug (FIFA
+    stops showing a time once a match is played/in progress, so blindly
+    re-scraping it wipes the existing value).
+
+Match identity: 'Match Number' — the stable row-order identifier that
+doesn't change even when Fixture/Short Name text changes (e.g. once
+Round of 32 matchups are decided).
 
 Source  : https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/scores-fixtures
-Output  : Supabase table → FIFA World Cup Schedule - Live (Results column only)
+Output  : Supabase table → FIFA World Cup Schedule - Live
+
+Requirements
+------------
+    pip install playwright supabase python-dotenv
+    playwright install chromium
 
 Run
 ---
-    python fifa_wc2026_results_updater.py
+    python SCHEDULE.py
 """
 
 import time
@@ -38,20 +55,45 @@ MAX_SCROLLS  = 80
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# ── HELPERS ──────────────────────────────────────────────────────────────────
 def clean(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
-def scrape_results_only() -> list[dict]:
-    """
-    Returns a list of dicts for COMPLETED matches only:
-        { "Fixture": "Mexico vs South Africa", "Results": "2 - 0" }
+def make_short_name(team1: str, team2: str) -> str:
+    """Generate short name like 'MEX VS RSA' from full team names."""
+    abbr = {
+        "Mexico": "MEX", "South Africa": "RSA", "Korea Republic": "KOR",
+        "Czechia": "CZE", "Canada": "CAN", "Bosnia and Herzegovina": "BIH",
+        "Qatar": "QAT", "Switzerland": "SUI", "Brazil": "BRA",
+        "Morocco": "MAR", "Haiti": "HAI", "Scotland": "SCO",
+        "USA": "USA", "Paraguay": "PAR", "Australia": "AUS",
+        "Türkiye": "TUR", "Germany": "GER", "Curaçao": "CUW",
+        "Netherlands": "NED", "Japan": "JPN", "Côte d'Ivoire": "CIV",
+        "Ecuador": "ECU", "Sweden": "SWE", "Tunisia": "TUN",
+        "Spain": "ESP", "Cabo Verde": "CPV", "Belgium": "BEL",
+        "Egypt": "EGY", "Saudi Arabia": "KSA", "Uruguay": "URU",
+        "IR Iran": "IRN", "New Zealand": "NZL", "France": "FRA",
+        "Senegal": "SEN", "Iraq": "IRQ", "Norway": "NOR",
+        "Argentina": "ARG", "Algeria": "ALG", "Austria": "AUT",
+        "Jordan": "JOR", "Portugal": "POR", "Congo DR": "COD",
+        "England": "ENG", "Croatia": "CRO", "Ghana": "GHA",
+        "Panama": "PAN", "Uzbekistan": "UZB", "Colombia": "COL",
+        "Serbia": "SRB", "Chile": "CHI", "Denmark": "DEN",
+        "Poland": "POL", "Ukraine": "UKR", "Romania": "ROU",
+        "Nigeria": "NGA", "Cameroon": "CMR", "Mali": "MLI",
+        "Venezuela": "VEN", "Peru": "PER", "Honduras": "HON",
+        "Costa Rica": "CRC", "Jamaica": "JAM",
+    }
+    a1 = abbr.get(team1, team1[:3].upper())
+    a2 = abbr.get(team2, team2[:3].upper())
+    return f"{a1} VS {a2}"
+# ─────────────────────────────────────────────────────────────────────────────
 
-    Logic per match row:
-    - If match-row_matchRowStatus exists  → match played → extract scores
-    - If match-row_matchTime exists       → upcoming     → SKIP entirely
-    """
-    results = []
+
+# ── SCRAPER ──────────────────────────────────────────────────────────────────
+def scrape() -> list[dict]:
+    matches = []
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
@@ -69,7 +111,7 @@ def scrape_results_only() -> list[dict]:
         )
         page = ctx.new_page()
 
-        print("[*] Loading FIFA fixtures page …")
+        print("[*] Loading page …")
         page.goto(URL, wait_until="domcontentloaded", timeout=60_000)
 
         print("[*] Waiting for match rows …")
@@ -90,44 +132,40 @@ def scrape_results_only() -> list[dict]:
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             time.sleep(SCROLL_PAUSE)
             new_height = page.evaluate("document.body.scrollHeight")
-            rows_so_far = len(
-                page.query_selector_all("[class*='match-row_matchRowContainer']")
-            )
+            rows_so_far = len(page.query_selector_all("[class*='match-row_matchRowContainer']"))
             print(f"    scroll {i+1:02d} | height {new_height:,} | rows: {rows_so_far}")
             if new_height == prev_height:
                 print("    → no more content")
                 break
             prev_height = new_height
 
-        print("[*] Parsing match rows for results …")
+        print("[*] Parsing match data …")
 
-        rows = page.query_selector_all("[class*='match-row_matchRowContainer']")
-        print(f"[*] Total match rows found: {len(rows)}")
+        # We only need match rows here (not date headers) since we're not
+        # touching Date/Group — but we still walk the same element list so
+        # 'Match Number' (row order) stays IDENTICAL to what SCHEDULE used
+        # originally. This is critical: Match Number must line up with the
+        # existing Supabase rows, or updates will land on the wrong match.
+        elements = page.query_selector_all(
+            "[class*='matches-container_header'], "
+            "[class*='match-row_matchRowContainer']"
+        )
+        print(f"[*] Total elements found: {len(elements)}")
 
-        completed = 0
-        skipped   = 0
+        for el in elements:
+            cls = el.get_attribute("class") or ""
 
-        for row in rows:
-            # ── Check if match is played (status div exists) ──────────────
-            status_div = row.query_selector("[class*='match-row_matchRowStatus']")
-            time_span  = row.query_selector("[class*='match-row_matchTime']")
-
-            if time_span and not status_div:
-                # Upcoming match — time is shown, no score yet → SKIP
-                skipped += 1
+            # Skip date headers — they don't count toward Match Number,
+            # same as the original scraper's numbering logic.
+            if "matches-container_header" in cls:
                 continue
 
-            if not status_div:
-                # Neither status nor time — unusual, skip
-                skipped += 1
-                continue
-
-            # ── Extract team names (same logic as original scraper) ───────
-            teams = row.query_selector_all("span.d-none.d-md-block")
+            # ── Match row ───────────────────────────────────────────────
+            teams = el.query_selector_all("span.d-none.d-md-block")
             team_names = [clean(t.inner_text()) for t in teams if clean(t.inner_text())]
 
             if len(team_names) < 2:
-                team_divs = row.query_selector_all("[class*='match-row_team']")
+                team_divs = el.query_selector_all("[class*='match-row_team']")
                 for div in team_divs:
                     spans = div.query_selector_all("span")
                     for s in spans:
@@ -137,54 +175,49 @@ def scrape_results_only() -> list[dict]:
                             break
 
             if len(team_names) < 2:
-                print(f"    [!] Could not extract team names for a row — skipping")
-                skipped += 1
                 continue
 
             team1, team2 = team_names[0], team_names[1]
-            fixture = f"{team1} vs {team2}"
 
-            # ── Extract scores from the two score spans ───────────────────
-            # HTML structure inside match-row_matchRowStatus:
-            #   <span class="match-row_score__wfcQP match-row_scoreWinner__KB4p-">2</span>
-            #   <div class="match-row_status__kFtCL">
-            #       <span class="match-row_statusLabel__AiSA3 match-row_fullTime__muXhs">FT</span>
-            #   </div>
-            #   <span class="match-row_score__wfcQP match-row_scoreLoser__wNbgU">0</span>
+            # ── Extract result if match is played ──────────────────────
+            status_div = el.query_selector("[class*='match-row_matchRowStatus']")
+            results = None  # None = omit field, don't touch Supabase value
 
-            score_spans = status_div.query_selector_all("[class*='match-row_score']")
-            score_values = [clean(s.inner_text()) for s in score_spans if clean(s.inner_text()).isdigit()]
+            if status_div:
+                score_spans  = status_div.query_selector_all("[class*='match-row_score']")
+                score_values = [clean(s.inner_text()) for s in score_spans if clean(s.inner_text()).isdigit()]
+                if len(score_values) >= 2:
+                    results = f"{score_values[0]} - {score_values[1]}"
 
-            if len(score_values) < 2:
-                # Score not yet available (e.g. match in progress with no score shown)
-                print(f"    [~] {fixture} — status div found but scores not ready, skipping")
-                skipped += 1
-                continue
+            match_number = len(matches) + 1
 
-            score1, score2 = score_values[0], score_values[1]
-            result_str = f"{score1} - {score2}"
+            row = {
+                "Match Number": match_number,
+                "Fixture":      f"{team1} vs {team2}",
+                "Short Name":   make_short_name(team1, team2),
+            }
+            if results is not None:
+                row["Results"] = results
 
-            results.append({
-                "Fixture": fixture,
-                "Results": result_str,
-            })
-            completed += 1
-            print(f"    [✓] {fixture}: {result_str}")
+            matches.append(row)
 
         browser.close()
 
-    print(f"\n[✓] Scraped {completed} completed results | {skipped} upcoming/skipped")
-    return results
+    print(f"[✓] Scraped {len(matches)} matches")
+    return matches
+# ─────────────────────────────────────────────────────────────────────────────
 
 
-def push_results_to_supabase(results: list[dict]) -> None:
+# ── SUPABASE UPDATE ────────────────────────────────────────────────────────────
+def push_to_supabase(matches: list[dict]) -> None:
     """
-    For each completed match, update ONLY the Results column.
-    Matches by Fixture string. Uses .update() with .eq() — NOT upsert —
-    so no other column is ever touched.
+    Updates ONLY Fixture, Short Name, and (when available) Results for
+    each row, matched by Match Number. Uses .update().eq() — NOT upsert —
+    so Date, Group, and Kick-off Time are never touched, and no new rows
+    are ever created.
     """
-    if not results:
-        print("[!] No completed results to push.")
+    if not matches:
+        print("[!] No data to push.")
         return
 
     print("[*] Connecting to Supabase …")
@@ -193,37 +226,37 @@ def push_results_to_supabase(results: list[dict]) -> None:
     updated = 0
     failed  = 0
 
-    for match in results:
-        fixture = match["Fixture"]
-        result  = match["Results"]
+    for m in matches:
+        match_number = m["Match Number"]
+        payload = {k: v for k, v in m.items() if k != "Match Number"}
 
         try:
             resp = (
                 supabase
                 .table(TABLE_NAME)
-                .update({"Results": result})          # ONLY Results column
-                .eq("Fixture", fixture)               # match by Fixture string
+                .update(payload)
+                .eq("Match Number", match_number)
                 .execute()
             )
 
             if resp.data:
                 updated += 1
-                print(f"    [✓] Updated '{fixture}' → {result}")
             else:
-                # Could mean fixture string doesn't match exactly in DB
-                print(f"    [!] No row found for fixture: '{fixture}' — check spelling")
                 failed += 1
+                print(f"    [!] No row found for Match Number {match_number} — check it exists in Supabase")
 
         except Exception as e:
-            print(f"    [✗] Error updating '{fixture}': {e}")
             failed += 1
+            print(f"    [✗] Error updating Match Number {match_number}: {e}")
 
     print(f"\n[✓] Done! {updated} updated | {failed} failed")
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 if __name__ == "__main__":
-    data = scrape_results_only()
+    data = scrape()
     if data:
-        push_results_to_supabase(data)
+        push_to_supabase(data)
     else:
-        print("[!] No completed matches found.")
+        print("[!] No data scraped.")
+        print("    → Try setting headless=False to debug.")
