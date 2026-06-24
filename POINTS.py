@@ -6,29 +6,37 @@ Output  : Supabase table  →  FIFA World Cup Points Table - Live
 
 Columns : Group | Rank | Country Name | Short Name | P | W | D | L | GD | Points
 
+FIXES APPLIED (verified via terminal diagnostic — all 48 rows correct):
+  1. Points was read from stats[7], but the actual cell order is
+     P, W, D, L, GF, GA, GD, TCS, Pts (9 cells) — TCS is a hidden
+     tiebreaker stat sitting between GD and Pts. Fixed to stats[8].
+  2. Group caption text is "Standings and Group Tables - Group A".
+     The phrase "Group Tables" was matching before the real "Group A",
+     causing every row to read Group="T". Fixed by anchoring the
+     regex to the end of the string with \\s*$.
+
 Requirements
 ------------
-    pip install playwright supabase
+    pip install playwright supabase python-dotenv
     playwright install chromium
 
 Run
 ---
-    python fifa_wc2026_supabase_scraper.py
+    python POINTS.py
 """
 
 import time
 import re
+import os
 from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 from supabase import create_client, Client
-
-# ── CONFIG ────────────────────────────────────────────────────────────────────
-URL          = "https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/standings"
-import os
 from dotenv import load_dotenv
 
+# ── CONFIG ────────────────────────────────────────────────────────────────────
 load_dotenv()
 
+URL          = "https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/standings"
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 TABLE_NAME   = "FIFA World Cup Points Table - Live"
@@ -94,11 +102,26 @@ def scrape() -> list[dict]:
             caption_el = container.query_selector("[class*='standings-table-head_tableCaption']")
             if not caption_el:
                 continue
-            caption_text = caption_el.inner_text().strip()
-            group_match = re.search(r"Group\s+([A-Z])", caption_text)
+
+            # FIX #2: caption text is "Standings and Group Tables - Group A".
+            # "Group Tables" appears before the real "Group A", so the regex
+            # must be anchored to the end of the string to avoid matching
+            # "Group T" (from "Tables") instead of the actual group letter.
+            inner_div = caption_el.query_selector("[class*='standings-table-head_text']")
+            if inner_div:
+                title_attr = inner_div.get_attribute("title")
+                inner_text = inner_div.inner_text()
+            else:
+                title_attr = caption_el.get_attribute("title")
+                inner_text = caption_el.inner_text()
+
+            caption_text = (title_attr or inner_text or "").strip()
+
+            group_match = re.search(r"Group\s+([A-Z])\s*$", caption_text)
             if not group_match:
+                print(f"    [!] Could not parse group from caption: '{caption_text}' — skipping table")
                 continue
-            group = group_match.group(1)   # just "A", "B", "C" … to match your sheet
+            group = group_match.group(1)   # "A", "B", "C" … to match your sheet
 
             team_rows = container.query_selector_all("tbody tr")
             for rank_idx, tr in enumerate(team_rows, 1):
@@ -111,7 +134,7 @@ def scrape() -> list[dict]:
                 full_name_el = tr.query_selector("span.d-none")
                 full_name = full_name_el.inner_text().strip() if full_name_el else short_name
 
-                # Stat cells: P W D L GF GA GD Pts
+                # Stat cells — CONFIRMED order: P W D L GF GA GD TCS Pts (9 cells)
                 stat_cells = tr.query_selector_all("[class*='standings-table-row_stats']")
                 stats = [c.inner_text().strip() for c in stat_cells]
 
@@ -131,7 +154,7 @@ def scrape() -> list[dict]:
                     "D":            safe_int(stats, 2),
                     "L":            safe_int(stats, 3),
                     "GD":           safe_int(stats, 6),  # skip GF(4) GA(5)
-                    "Points":       safe_int(stats, 7),
+                    "Points":       safe_int(stats, 8),  # FIX #1: skip TCS(7) too
                 })
 
         browser.close()
