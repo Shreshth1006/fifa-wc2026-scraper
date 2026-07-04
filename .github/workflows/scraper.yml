@@ -40,23 +40,5 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python POINTS.py
 
-      - name: Run Results Updater
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: python fifa_wc2026_results_updater.py
-
-      - name: Run ESPN Stats Scraper
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL_WIDGET }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY_WIDGET }}
-        run: python STATS.py
-
-      - name: Run Goalkeeping Scraper
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL_WIDGET }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY_WIDGET }}
-        run: python GOALS.py
-
 
       
